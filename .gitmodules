@@ -1,3 +1,6 @@
 [submodule "async-ucx"]
 	path = async-ucx
 	url = https://github.com/namachan10777/async-ucx
+[submodule "rsmpi"]
+	path = rsmpi
+	url = https://github.com/namachan10777/rsmpi
