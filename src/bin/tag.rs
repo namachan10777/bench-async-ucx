@@ -1,6 +1,12 @@
 #![feature(async_fn_in_trait)]
 
-use std::{sync::{Arc, atomic::Ordering}, mem::{MaybeUninit, transmute}, time::Duration, rc::Rc, cell::RefCell};
+use std::{
+    cell::RefCell,
+    mem::{transmute, MaybeUninit},
+    rc::Rc,
+    sync::{atomic::Ordering, Arc},
+    time::Duration,
+};
 
 use bench_async_ucx::Config;
 use metrics::atomics::AtomicU64;
@@ -37,12 +43,14 @@ impl bench_async_ucx::Bench for Bench {
         let local_count = Rc::new(RefCell::new(0));
         let local_count_ref = local_count.clone();
         tokio::task::spawn_local(async move {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            let counted = *local_count_ref.borrow();
-            *local_count_ref.borrow_mut() = 0;
-            io_count.fetch_add(counted, Ordering::SeqCst);
+            loop {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                let counted: u64 = *local_count_ref.borrow();
+                *local_count_ref.borrow_mut() = 0;
+                io_count.fetch_add(counted, Ordering::SeqCst);
+            }
         });
-        for _ in 0..10_000_000 {
+        for _ in 0..1_000_000 {
             worker.tag_recv(tag, &mut buf).await?;
             ep.tag_send(tag, unsafe { transmute(&buf[..]) }).await?;
             *local_count.borrow_mut() += 1;
@@ -54,6 +62,9 @@ impl bench_async_ucx::Bench for Bench {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let server_thread_count = std::env::var("SERVER_THEAD_COUNT")?.parse()?;
+    let client_thread_count = std::env::var("CLIENT_THEAD_COUNT")?.parse()?;
+    let client_task_count = std::env::var("CLIENT_TASK_COUNT")?.parse()?;
     let io_count = Arc::new(AtomicU64::new(0));
     let tag = Arc::new(AtomicU64::new(1000));
     let io_count_ = io_count.clone();
@@ -66,13 +77,19 @@ async fn main() -> anyhow::Result<()> {
             }
         }
     });
-    bench_async_ucx::bench(Bench {
-        io_count,
-        tag
-    }, Config {
-        server_thread_count: 1,
-        client_thread_count: 1,
-        client_task_count: 32,
-    }).await?;
+    tokio::spawn(async move {
+        // deadline 10m
+        tokio::time::sleep(Duration::from_secs(60 * 1)).await;
+        std::process::exit(1);
+    });
+    bench_async_ucx::bench(
+        Bench { io_count, tag },
+        Config {
+            server_thread_count,
+            client_thread_count,
+            client_task_count,
+        },
+    )
+    .await?;
     Ok(())
 }

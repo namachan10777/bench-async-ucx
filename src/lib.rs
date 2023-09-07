@@ -4,20 +4,14 @@ use async_ucx::ucp::{ConnectionRequest, Context, Endpoint};
 use metrics::atomics::AtomicU64;
 use mpi::traits::*;
 use std::{
-    future::Future,
-    net::{IpAddr, Ipv4Addr, Shutdown, SocketAddr, SocketAddrV4},
-    pin::Pin,
-    rc::Rc,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
-    },
+    net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4},
+    sync::{atomic::Ordering, Arc},
 };
 use tokio::sync::{
-    mpsc::{self, UnboundedSender},
+    mpsc,
     oneshot,
 };
-use tracing::{info, warn, debug};
+use tracing::{debug, info, warn};
 use tracing_subscriber::prelude::*;
 
 use network_interface::{NetworkInterface, NetworkInterfaceConfig};
@@ -134,8 +128,10 @@ pub async fn bench<B: Bench + Clone + Send + Sync + 'static>(
     config: Config,
 ) -> anyhow::Result<()> {
     tracing_subscriber::registry()
-        .with(tracing_subscriber::EnvFilter::from_default_env())
-        .with(tracing_subscriber::fmt::layer())
+        .with(
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "Info".into()),
+        )
+        .with(tracing_subscriber::fmt::Layer::default().with_ansi(false))
         .init();
 
     let universe = mpi::initialize().unwrap();
