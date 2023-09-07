@@ -68,6 +68,7 @@ async fn main() -> anyhow::Result<()> {
     let io_count = Arc::new(AtomicU64::new(0));
     let tag = Arc::new(AtomicU64::new(1000));
     let io_count_ = io_count.clone();
+    info!(server_thread_count, client_thread_count, client_task_count, "init");
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(Duration::from_millis(1000)).await;
