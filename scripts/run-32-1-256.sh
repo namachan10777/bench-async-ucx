@@ -23,4 +23,5 @@ mpirun ${NQSV_MPIOPTS} \
     -x CLIENT_TASK_COUNT \
     -np 2 \
     -npernode 1 \
+    --report-bindings \
     "/work/0/NBB/mnakano/bench-async-ucx/target/release/${BIN}"

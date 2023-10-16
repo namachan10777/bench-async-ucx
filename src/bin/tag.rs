@@ -8,6 +8,7 @@ use std::{
     time::Duration,
 };
 
+use anyhow::Context;
 use bench_async_ucx::Config;
 use metrics::atomics::AtomicU64;
 use tracing::info;
@@ -50,7 +51,7 @@ impl bench_async_ucx::Bench for Bench {
                 io_count.fetch_add(counted, Ordering::SeqCst);
             }
         });
-        for _ in 0..1_000_000 {
+        for _ in 0..1_00_000 {
             worker.tag_recv(tag, &mut buf).await?;
             ep.tag_send(tag, unsafe { transmute(&buf[..]) }).await?;
             *local_count.borrow_mut() += 1;
@@ -62,13 +63,22 @@ impl bench_async_ucx::Bench for Bench {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let server_thread_count = std::env::var("SERVER_THEAD_COUNT")?.parse()?;
-    let client_thread_count = std::env::var("CLIENT_THEAD_COUNT")?.parse()?;
-    let client_task_count = std::env::var("CLIENT_TASK_COUNT")?.parse()?;
+    let server_thread_count = std::env::var("SERVER_THREAD_COUNT")
+        .with_context(|| "SERVER_THREAD_COUNT")?
+        .parse()?;
+    let client_thread_count = std::env::var("CLIENT_THREAD_COUNT")
+        .with_context(|| "CLIENT_THREAD_COUNT")?
+        .parse()?;
+    let client_task_count = std::env::var("CLIENT_TASK_COUNT")
+        .with_context(|| "CLIENT_TASK_COUNT")?
+        .parse()?;
     let io_count = Arc::new(AtomicU64::new(0));
     let tag = Arc::new(AtomicU64::new(1000));
     let io_count_ = io_count.clone();
-    info!(server_thread_count, client_thread_count, client_task_count, "init");
+    info!(
+        server_thread_count,
+        client_thread_count, client_task_count, "init"
+    );
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(Duration::from_millis(1000)).await;
@@ -80,7 +90,7 @@ async fn main() -> anyhow::Result<()> {
     });
     tokio::spawn(async move {
         // deadline 10m
-        tokio::time::sleep(Duration::from_secs(60 * 1)).await;
+        tokio::time::sleep(Duration::from_secs(60 * 5)).await;
         std::process::exit(1);
     });
     bench_async_ucx::bench(
