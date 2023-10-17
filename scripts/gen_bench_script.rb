@@ -1,8 +1,8 @@
 require 'erb'
 
 template = IO.read("template.sh.erb")
-server_thread_count_max = 8
-client_thread_count_max = 8
+server_thread_count_max = 32
+client_thread_count_max = 32
 client_actual_task_count_max = 1024
 nodes = 2
 

@@ -1,13 +1,13 @@
 require 'json'
 
-filename_re = /^R([0-9]+)-([0-9]+)-([0-9])+.sh.o[0-9]+$/
+filename_re = /^R([0-9]+)-([0-9]+)-([0-9]+).sh.o[0-9]+$/
 line_re = /INFO tag: IOPS iops=([0-9]+)$/
 iops = {}
 Dir.glob('*.sh.o*').each do |file|
   captured = filename_re.match(file).captures
-  server_thread_count = captured[1].to_i
-  client_thread_count = captured[2].to_i
-  client_task_count = captured[3].to_i
+  server_thread_count = captured[0].to_i
+  client_thread_count = captured[1].to_i
+  client_task_count = captured[2].to_i
   unless iops.key? server_thread_count
     iops[server_thread_count] = {}
   end
@@ -23,7 +23,7 @@ Dir.glob('*.sh.o*').each do |file|
   open(file).each do |line|
     captured = line_re.match(line)
     if captured != nil
-      iops_series.push (captured[1].to_i)
+      iops_series.push (captured.captures[0].to_i)
     end
   end
 
