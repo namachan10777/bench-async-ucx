@@ -28,7 +28,7 @@ impl bench_async_ucx::Bench for Bench {
         let tag: u64 = unsafe { transmute(tag_buf) };
         let msg = "Hello World".as_bytes().to_vec();
         let mut buf = [MaybeUninit::uninit(); 256];
-        for _ in 0..10_000_000 {
+        for _ in 0..50_000_000 {
             ep.tag_send(tag, &msg).await?;
             worker.tag_recv(tag, &mut buf).await?;
         }
