@@ -13,9 +13,9 @@ module load "openmpi/${NQSV_MPI_VER}"
 module load "ucx/1.13.1/cuda11.8.0"
 
 export RUST_LOG=Info
-export SERVER_THREAD_COUNT="<% server_thread_count %>"
-export CLIENT_THREAD_COUNT="<% client_thread_count %>"
-export CLIENT_TASK_COUNT="<% client_task_count %>"
+export SERVER_THREAD_COUNT="<%= server_thread_count %>"
+export CLIENT_THREAD_COUNT="<%= client_thread_count %>"
+export CLIENT_TASK_COUNT="<%= client_task_count %>"
 
 mpirun ${NQSV_MPIOPTS} \
     -x RUST_LOG \
