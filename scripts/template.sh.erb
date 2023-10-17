@@ -1,9 +1,10 @@
 #!/bin/bash
-#PBS -b 2
+#PBS -b <%= nodes %>
 #PBS -q gpu
 #PBS -T openmpi
 #PBS -A NBB
 #PBS -v NQSV_MPI_VER=4.1.5/gcc9.4.0-cuda11.8.0
+#PBS -l elapstim_req=00:10:00
 
 BIN=tag
 
@@ -11,10 +12,10 @@ module load use.own
 module load "openmpi/${NQSV_MPI_VER}"
 module load "ucx/1.13.1/cuda11.8.0"
 
-RUST_LOG=Info
-SERVER_THREAD_COUNT=1
-CLIENT_THREAD_COUNT=32
-CLIENT_TASK_COUNT=8
+export RUST_LOG=Info
+export SERVER_THREAD_COUNT="<% server_thread_count %>"
+export CLIENT_THREAD_COUNT="<% client_thread_count %>"
+export CLIENT_TASK_COUNT="<% client_task_count %>"
 
 mpirun ${NQSV_MPIOPTS} \
     -x RUST_LOG \
@@ -22,6 +23,6 @@ mpirun ${NQSV_MPIOPTS} \
     -x CLIENT_THREAD_COUNT \
     -x CLIENT_TASK_COUNT \
     -np 2 \
-    -npernode 1 \
     --report-bindings \
+    -npernode 1 \
     "/work/0/NBB/mnakano/bench-async-ucx/target/release/${BIN}"
