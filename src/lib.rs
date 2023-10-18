@@ -7,11 +7,8 @@ use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4},
     sync::{atomic::Ordering, Arc},
 };
-use tokio::sync::{
-    mpsc,
-    oneshot,
-};
-use tracing::{debug, info, warn};
+use tokio::sync::{mpsc, oneshot};
+use tracing::{debug, info, trace, warn};
 use tracing_subscriber::prelude::*;
 
 use network_interface::{NetworkInterface, NetworkInterfaceConfig};
@@ -152,6 +149,7 @@ pub async fn bench<B: Bench + Clone + Send + Sync + 'static>(
         let ctx = Context::new()?;
         let worker = ctx.create_worker()?;
         let mut listener = worker.create_listener(SocketAddr::V4(SocketAddrV4::new(ip, port)))?;
+        trace!(on = ip.to_string(), "listener_created");
         local.spawn_local(worker.clone().polling());
         for _ in 0..config.server_thread_count {
             let (exit, exit_wait) = oneshot::channel();
@@ -160,13 +158,15 @@ pub async fn bench<B: Bench + Clone + Send + Sync + 'static>(
             workers.push(worker);
         }
         let shutdown_receiver = futures::future::join_all(shutdowns);
+        trace!("spawn_server_watcher");
         local.spawn_local(async move {
             for idx in 0.. {
-                let conn_req = listener.next().await;
+                let conn_req: ConnectionRequest = listener.next().await;
                 debug!("got_conn_req");
                 workers[idx % workers.len()].sender.send(conn_req).unwrap();
             }
         });
+        trace!("spawn_connection_handler");
         local.run_until(shutdown_receiver).await;
     } else {
         let mut buf = [0; 4];
@@ -211,6 +211,7 @@ pub async fn bench<B: Bench + Clone + Send + Sync + 'static>(
                     });
                     task_handlers.push(handler);
                 }
+                trace!(to = ip.to_string(), "client_created");
                 local.block_on(&rt, futures::future::join_all(task_handlers));
             });
             thread_handlers.push(handler);

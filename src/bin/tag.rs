@@ -11,7 +11,7 @@ use std::{
 use anyhow::Context;
 use bench_async_ucx::Config;
 use metrics::atomics::AtomicU64;
-use tracing::info;
+use tracing::{info, trace};
 extern crate mpi;
 
 #[derive(Clone)]
@@ -19,6 +19,8 @@ struct Bench {
     io_count: Arc<AtomicU64>,
     tag: Arc<AtomicU64>,
 }
+
+const ITERATION_COUNT: usize = 5_000_000;
 
 impl bench_async_ucx::Bench for Bench {
     async fn client(&self, ep: async_ucx::ucp::Endpoint) -> anyhow::Result<()> {
@@ -28,7 +30,8 @@ impl bench_async_ucx::Bench for Bench {
         let tag: u64 = unsafe { transmute(tag_buf) };
         let msg = "Hello World".as_bytes().to_vec();
         let mut buf = [MaybeUninit::uninit(); 256];
-        for _ in 0..50_000_000 {
+        trace!("start_iteration_on_client");
+        for _ in 0..ITERATION_COUNT {
             ep.tag_send(tag, &msg).await?;
             worker.tag_recv(tag, &mut buf).await?;
         }
@@ -36,6 +39,7 @@ impl bench_async_ucx::Bench for Bench {
         Ok(())
     }
     async fn server(&self, ep: async_ucx::ucp::Endpoint) -> anyhow::Result<()> {
+        trace!("start_server_init_on_ucx");
         let tag = self.tag.fetch_add(1, Ordering::SeqCst);
         ep.tag_send(100, tag.to_ne_bytes().as_ref()).await?;
         let mut buf = [MaybeUninit::uninit(); 256];
@@ -51,7 +55,8 @@ impl bench_async_ucx::Bench for Bench {
                 io_count.fetch_add(counted, Ordering::SeqCst);
             }
         });
-        for _ in 0..1_00_000 {
+        trace!("start_iteration_on_server");
+        for _ in 0..ITERATION_COUNT {
             worker.tag_recv(tag, &mut buf).await?;
             ep.tag_send(tag, unsafe { transmute(&buf[..]) }).await?;
             *local_count.borrow_mut() += 1;
