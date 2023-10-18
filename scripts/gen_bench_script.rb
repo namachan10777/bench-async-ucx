@@ -15,7 +15,7 @@ while server_thread_count <= server_thread_count_max
     client_task_count = 1
     while client_thread_count * client_task_count <= client_actual_task_count_max
       IO.write("#{server_thread_count}-#{client_thread_count}-#{client_task_count}.sh", template.result)
-      client_task_count *= 8
+      client_task_count *= 4
     end
     client_thread_count *= 2
   end
