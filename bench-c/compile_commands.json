@@ -1,0 +1,28 @@
+[
+  {
+    "arguments": [
+      "/work/0/NBB/mnakano/spack/opt/spack/linux-ubuntu20.04-icelake/gcc-9.4.0/llvm-16.0.6-jatmsmq34ww436xmixvmnyphrpzbfpxk/bin/clang",
+      "-Impi.p",
+      "-I.",
+      "-I..",
+      "-I/usr/lib/x86_64-linux-gnu/openmpi/include",
+      "-I/usr/lib/x86_64-linux-gnu/openmpi/include/openmpi",
+      "-fcolor-diagnostics",
+      "-D_FILE_OFFSET_BITS=64",
+      "-Wall",
+      "-Winvalid-pch",
+      "-Wextra",
+      "-Wpedantic",
+      "-O0",
+      "-g",
+      "-pthread",
+      "-c",
+      "-o",
+      "mpi.p/mpi.c.o",
+      "../mpi.c"
+    ],
+    "directory": "/work/0/NBB/mnakano/bench-async-ucx/bench-c/build",
+    "file": "/work/0/NBB/mnakano/bench-async-ucx/bench-c/mpi.c",
+    "output": "/work/0/NBB/mnakano/bench-async-ucx/bench-c/build/mpi.p/mpi.c.o"
+  }
+]
