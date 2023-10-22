@@ -4,10 +4,11 @@ project('mpi', 'c',
 
 mpi = dependency('mpi', version : '>=4')
 ucx = dependency('ucx', version : '>=1.14.0')
+threads = dependency('threads')
 
 exe = executable('mpi', 'mpi.c',
   install : true,
-  dependencies : [mpi, ucx],
+  dependencies : [mpi, ucx, threads],
 )
 
 test('basic', exe)
