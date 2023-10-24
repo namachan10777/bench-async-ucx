@@ -75,7 +75,7 @@ impl WorkerThread {
                 async move {
                     accept_at_least_one_rx.await.unwrap();
                     let mut shutdown_count = 0;
-                    while let Ok(_) = shutdown_rx.recv().await {
+                    while shutdown_rx.recv().await.is_ok() {
                         shutdown_count += 1;
                         if shutdown_count >= task_count.load(Ordering::Relaxed) {
                             break;

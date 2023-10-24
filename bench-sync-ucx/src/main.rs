@@ -10,26 +10,22 @@ use std::{
 
 use anyhow::Context as _;
 use libc::sockaddr_storage;
-use mpi::{
-    point_to_point::Status,
-    traits::{Communicator, Destination, Source},
-};
+use mpi::traits::{Communicator, Destination, Source};
 use network_interface::{NetworkInterface, NetworkInterfaceConfig};
 use regex::Regex;
 use socket2::SockAddr;
-use tracing::{error, info, trace, warn};
+use tracing::{error, info, warn};
 use ucx1_sys::{
-    ucp_cleanup, ucp_config_read, ucp_conn_request, ucp_context_h, ucp_datatype_t,
-    ucp_dt_make_contig, ucp_ep_close_flags_t, ucp_ep_close_nbx, ucp_ep_create, ucp_ep_destroy,
-    ucp_ep_h, ucp_ep_params, ucp_ep_params_field, ucp_ep_params_flags_field, ucp_err_handler,
-    ucp_feature, ucp_init_version, ucp_listener_create, ucp_listener_destroy, ucp_listener_h,
-    ucp_listener_params_field, ucp_listener_params_t, ucp_op_attr_t, ucp_request_check_status,
-    ucp_request_free, ucp_request_param_t, ucp_request_param_t__bindgen_ty_1, ucp_tag_recv_info,
-    ucp_tag_recv_nbx, ucp_tag_send_nbx, ucp_worker_create, ucp_worker_destroy, ucp_worker_h,
-    ucp_worker_progress, ucs_sock_addr, ucs_status_ptr_t, ucs_status_t, UCS_PTR_IS_ERR,
-    UCS_PTR_IS_PTR, UCS_PTR_RAW_STATUS, UCS_PTR_STATUS,
+    ucp_cleanup, ucp_config_read, ucp_conn_request, ucp_context_h, ucp_dt_make_contig,
+    ucp_ep_close_flags_t, ucp_ep_close_nbx, ucp_ep_create, ucp_ep_h, ucp_ep_params,
+    ucp_ep_params_field, ucp_ep_params_flags_field, ucp_err_handler, ucp_feature, ucp_init_version,
+    ucp_listener_create, ucp_listener_destroy, ucp_listener_h, ucp_listener_params_field,
+    ucp_listener_params_t, ucp_op_attr_t, ucp_request_check_status, ucp_request_free,
+    ucp_request_param_t, ucp_request_param_t__bindgen_ty_1, ucp_tag_recv_info, ucp_tag_recv_nbx,
+    ucp_tag_send_nbx, ucp_worker_create, ucp_worker_destroy, ucp_worker_h, ucp_worker_progress,
+    ucs_sock_addr, ucs_status_ptr_t, ucs_status_t, UCS_PTR_IS_ERR, UCS_PTR_IS_PTR,
+    UCS_PTR_RAW_STATUS, UCS_PTR_STATUS,
 };
-use valuable::Valuable;
 
 /// UCX error code.
 #[allow(missing_docs)]
@@ -284,7 +280,7 @@ impl<S> Drop for Listener<S> {
 
 impl<S: Clone> Listener<S> {
     unsafe fn create(
-        worker: &mut Rc<Worker>,
+        worker: &Rc<Worker>,
         addr: SocketAddr,
         cb: unsafe fn(ConnectionRequest, Rc<Worker>, S),
         state: S,
@@ -536,7 +532,7 @@ impl Endpoint {
         };
         let ptr = ucp_tag_recv_nbx(
             self.worker.h,
-            buffer.as_ref().as_ptr() as _,
+            buffer.as_mut_ptr() as _,
             buffer.as_ref().len(),
             tag,
             tag_mask,
@@ -576,11 +572,11 @@ unsafe fn client_server_do_work(ep: Endpoint, is_server: bool) -> Result<(), Err
         let tx_cb = Rc::new(|_| {});
 
         for _ in 0..50 {
-            for _ in 0..1_000_000 {
+            for _ in 0..100_000 {
                 let status = ep.tag_recv(&mut buffer, 99, 0, Rc::downgrade(&rx_cb));
                 status.wait(&ep.worker)?;
                 let buffer: [u8; 256] = transmute(buffer);
-                let status = ep.tag_send(101, &buffer, Rc::downgrade(&tx_cb));
+                let status = ep.tag_send(101, buffer, Rc::downgrade(&tx_cb));
                 status.wait(&ep.worker)?;
             }
         }
@@ -599,7 +595,6 @@ unsafe fn client_server_do_work(ep: Endpoint, is_server: bool) -> Result<(), Err
                 let mut buffer = [MaybeUninit::uninit(); 256];
                 let status = ep.tag_recv(&mut buffer, 101, 0, Rc::downgrade(&rx_cb));
                 status.wait(&ep.worker)?;
-                let buffer: [u8; 256] = transmute(buffer);
             }
             let elapsed = now.elapsed().as_micros();
             info!(iops = (100000.0 / elapsed as f64 * 1000.0 * 1000.0))
@@ -617,7 +612,9 @@ unsafe fn conn_handler(conn_req: ConnectionRequest, worker: Rc<Worker>, state: R
             return;
         }
     };
-    if let Err(e) = client_server_do_work(ep, true) {}
+    if let Err(e) = client_server_do_work(ep, true) {
+        warn!("{e}");
+    }
     state.store(true, Ordering::SeqCst);
 }
 
@@ -644,10 +641,10 @@ fn main() -> anyhow::Result<()> {
         info!(ip = ip.to_string(), "send_ip");
         unsafe {
             let ctx = Context::init()?;
-            let mut worker = Worker::create(&ctx)?;
+            let worker = Worker::create(&ctx)?;
             let end_flag = Rc::new(AtomicBool::new(false));
-            let listener = Listener::create(
-                &mut worker,
+            let _ = Listener::create(
+                &worker,
                 SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port)),
                 conn_handler,
                 end_flag.clone(),
