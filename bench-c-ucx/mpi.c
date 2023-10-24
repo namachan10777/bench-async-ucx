@@ -1,5 +1,6 @@
 #include <alloca.h>
 #include <arpa/inet.h>
+#include <bits/pthreadtypes.h>
 #include <ifaddrs.h>
 #include <mpi.h>
 #include <netdb.h>
@@ -10,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <threads.h>
 #include <ucp/api/ucp.h>
 #include <ucp/api/ucp_compat.h>
 #include <ucp/api/ucp_def.h>
@@ -22,7 +24,7 @@
 
 #define UNUSED(x) (void)(x)
 
-static uint16_t listen_port = 10082;
+static uint16_t listen_port = 10097;
 static _Bool global_close = 0;
 
 int get_my_addr(struct sockaddr *if_addr_buf) {
@@ -61,6 +63,7 @@ static ucs_status_t request_wait(ucp_worker_h ucp_worker, void *request) {
     return UCS_OK;
   }
   if (UCS_PTR_IS_ERR(request)) {
+    ucp_request_free(request);
     return UCS_PTR_STATUS(request);
   }
   while ((status = ucp_request_check_status(request)) == UCS_INPROGRESS) {
@@ -93,7 +96,7 @@ typedef struct conn_req_ctx {
   ucp_context_h ctx;
 } conn_req_ctx_t;
 
-static void server_recv_callback(void *req, ucs_status_t status,
+static void recv_callback(void *req, ucs_status_t status,
                                  const ucp_tag_recv_info_t *tag_recv_info,
                                  void *user_data) {
   UNUSED(req);
@@ -103,13 +106,12 @@ static void server_recv_callback(void *req, ucs_status_t status,
   *completed = 1;
 }
 
-static void client_send_callback(void *req, ucs_status_t status,
+static void send_callback(void *req, ucs_status_t status,
                                  void *user_data) {
   UNUSED(req);
   UNUSED(status);
   _Bool *completed = user_data;
   *completed = 1;
-  fprintf(stderr, "sent data from client to server\n");
 }
 
 const char test_message[] = "Hello World!";
@@ -128,7 +130,7 @@ static ucs_status_t client_server_do_work(ucp_worker_h worker, ucp_ep_h ep,
                         UCP_OP_ATTR_FIELD_USER_DATA |
                         UCP_OP_ATTR_FIELD_DATATYPE,
         .user_data = &completed,
-        .cb.recv = server_recv_callback,
+        .cb.recv = recv_callback,
         .datatype = ucp_dt_make_contig(1),
     };
     ucp_request_param_t send_req_params = {
@@ -136,7 +138,7 @@ static ucs_status_t client_server_do_work(ucp_worker_h worker, ucp_ep_h ep,
                         UCP_OP_ATTR_FIELD_USER_DATA |
                         UCP_OP_ATTR_FIELD_DATATYPE,
         .user_data = &completed,
-        .cb.send = client_send_callback,
+        .cb.send = send_callback,
         .datatype = ucp_dt_make_contig(1),
     };
     for (size_t i = 0; i < 50; ++i) {
@@ -144,7 +146,7 @@ static ucs_status_t client_server_do_work(ucp_worker_h worker, ucp_ep_h ep,
         ucs_status_ptr_t recv_req = ucp_tag_recv_nbx(
             worker, buffer, sizeof(test_message), 99, 0, &recv_req_params);
         if ((status = request_wait(worker, recv_req)) != UCS_OK) {
-          fprintf(stderr, "failed to close ep (%s)\n",
+          fprintf(stderr, "failed to finish recv (%s)\n",
                   ucs_status_string(status));
         };
         ucs_status_ptr_t send_req = ucp_tag_send_nbx(
@@ -157,86 +159,270 @@ static ucs_status_t client_server_do_work(ucp_worker_h worker, ucp_ep_h ep,
       ucp_ep_print_info(ep, stderr);
     }
     global_close = 1;
-  } else {
-    fprintf(stderr, "client\n");
-    memcpy(buffer, test_message, sizeof(test_message));
-    ucp_request_param_t send_req_params = {
-        .op_attr_mask = UCP_OP_ATTR_FIELD_CALLBACK |
-                        UCP_OP_ATTR_FIELD_USER_DATA |
-                        UCP_OP_ATTR_FIELD_DATATYPE,
-        .user_data = &completed,
-        .cb.send = client_send_callback,
-        .datatype = ucp_dt_make_contig(1),
-    };
-    ucp_request_param_t recv_req_params = {
-        .op_attr_mask = UCP_OP_ATTR_FIELD_CALLBACK |
-                        UCP_OP_ATTR_FIELD_USER_DATA |
-                        UCP_OP_ATTR_FIELD_DATATYPE,
-        .user_data = &completed,
-        .cb.recv = server_recv_callback,
-        .datatype = ucp_dt_make_contig(1),
-    };
-    for (size_t i = 0; i < 50; ++i) {
-      struct timespec before, after;
-      clock_gettime(CLOCK_REALTIME, &before);
-      for (size_t j = 0; j < 100000; ++j) {
-        ucs_status_ptr_t send_req = ucp_tag_send_nbx(
-            ep, buffer, sizeof(test_message), 99, &send_req_params);
-        if ((status = request_wait(worker, send_req)) != UCS_OK) {
-          fprintf(stderr, "send tag nbx %s\n", ucs_status_string(status));
-          return status;
-        }
-        ucs_status_ptr_t recv_req = ucp_tag_recv_nbx(
-            worker, buffer, sizeof(test_message), 99, 0, &recv_req_params);
-        if ((status = request_wait(worker, recv_req)) != UCS_OK) {
-          fprintf(stderr, "failed to close ep (%s)\n",
-                  ucs_status_string(status));
-        };
-      }
-      clock_gettime(CLOCK_REALTIME, &after);
-      uint64_t elapsed_nsecs = (after.tv_sec - before.tv_sec) * 1000000000 +
-                               (after.tv_nsec - before.tv_nsec);
-      double elapsed_ns = elapsed_nsecs;
-      double iops = 100000.0 / elapsed_ns * 1000.0 * 1000.0 * 1000.0;
-      fprintf(stderr, "iops=%f\n", iops);
-      // ucp_ep_print_info(ep, stderr);
-    }
-    fprintf(stderr, "sent completed\n");
   }
   return UCS_OK;
 }
 
-static ucs_status_t run_client(ucp_worker_h worker,
-                               struct sockaddr *server_addr) {
-  ucs_status_t status;
-  ucp_ep_params_t ep_params = {
-      .field_mask = UCP_EP_PARAM_FIELD_FLAGS | UCP_EP_PARAM_FIELD_SOCK_ADDR |
-                    UCP_EP_PARAM_FIELD_ERR_HANDLING_MODE,
-      .err_mode = UCP_ERR_HANDLING_MODE_PEER,
-      .flags = UCP_EP_PARAMS_FLAGS_CLIENT_SERVER,
-      .sockaddr.addr = server_addr,
-      .sockaddr.addrlen = sizeof(struct sockaddr),
-  };
+typedef enum client_state_flag {
+  SEND,
+  RECV,
+  PENDING,
+} client_state_flag_t;
+
+typedef struct client_task_state {
+  client_state_flag_t flag;
+  size_t task_id;
   ucp_ep_h ep;
-  size_t retry_count = 0;
-  do {
-    fprintf(stderr, "retry %ld\n", retry_count);
-    status = ucp_ep_create(worker, &ep_params, &ep);
-    ++retry_count;
-  } while (status != UCS_OK && retry_count < 10);
-  // ucp_ep_print_info(ep, stderr);
+  _Bool ep_closed;
+  uint8_t *buffer;
+  size_t buffer_size;
+  _Bool finished;
+  ucp_request_param_t send_params;
+  ucp_request_param_t recv_params;
+} client_task_state_t;
+
+typedef struct client_thread_state {
+  client_task_state_t *tasks;
+  size_t task_count;
+  _Bool finished;
+} client_thread_state_t;
+
+client_thread_state_t *client_threads;
+size_t client_thread_count;
+
+typedef struct client_thread_ctx {
+  ucp_context_h ctx;
+  struct sockaddr *server_addr;
+  size_t client_thread_idx;
+} client_thread_ctx_t;
+
+static void client_ep_error_handler(void *arg, ucp_ep_h ep,
+                                    ucs_status_t status) {
+  UNUSED(status);
+  UNUSED(ep);
+  client_task_state_t *task = (client_task_state_t *)arg;
+  task->ep_closed = 1;
+}
+
+static void client_send_cb(void *req, ucs_status_t status, void *arg) {
+  client_task_state_t *task_state = arg;
+  fprintf(stderr, "%p\n", req);
   if (status != UCS_OK) {
-    fprintf(stderr, "client ep creation (%s)\n", ucs_status_string(status));
+    fprintf(stderr, "client_recv_cb: %s\n", ucs_status_string(status));
+    task_state->finished = 1;
+    return;
+  }
+  if (req != NULL) {
+    ucp_request_free(req);
+  }
+  task_state->flag = RECV;
+}
+
+static void client_recv_cb(void *req, ucs_status_t status,
+                           const ucp_tag_recv_info_t *recv_info, void *arg) {
+  UNUSED(recv_info);
+  client_task_state_t *task_state = arg;
+  if (status != UCS_OK) {
+    fprintf(stderr, "client_recv_cb: %s\n", ucs_status_string(status));
+    task_state->finished = 1;
+  }
+  if (req != NULL) {
+    ucp_request_free(req);
+  }
+  task_state->flag = SEND;
+}
+
+static void *start_client_thread(void *arg) {
+  client_thread_ctx_t *ctx = arg;
+  ucp_worker_params_t worker_params = {
+      .field_mask = UCP_WORKER_PARAM_FIELD_THREAD_MODE,
+      .thread_mode = UCS_THREAD_MODE_SINGLE,
+  };
+  ucs_status_t status;
+  ucp_worker_h worker;
+  if ((status = ucp_worker_create(ctx->ctx, &worker_params, &worker))) {
+    fprintf(stderr, "failed to create client worker: %s\n",
+            ucs_status_string(status));
     goto err;
   }
-  if ((status = client_server_do_work(worker, ep, 0)) != UCS_OK) {
-    goto err_ep;
+  // タスクの初期化
+  for (size_t i = 0; i < client_threads[ctx->client_thread_idx].task_count;
+       ++i) {
+    client_task_state_t *task_state =
+        &client_threads[ctx->client_thread_idx].tasks[i];
+    task_state->flag = SEND;
+    task_state->finished = 0;
+    task_state->buffer =
+        malloc(client_threads[ctx->client_thread_idx].tasks[i].buffer_size);
+    strcpy( (char*)task_state->buffer, "Hello World!");
+    task_state->ep_closed = 0;
+    ucp_request_param_t send_params = {
+        .op_attr_mask = UCP_OP_ATTR_FIELD_CALLBACK |
+                        UCP_OP_ATTR_FIELD_DATATYPE |
+                        UCP_OP_ATTR_FIELD_USER_DATA,
+        .datatype = ucp_dt_make_contig(1),
+        .cb.send = client_send_cb,
+        .user_data = task_state,
+    };
+
+    ucp_request_param_t recv_params = {
+        .op_attr_mask = UCP_OP_ATTR_FIELD_CALLBACK |
+                        UCP_OP_ATTR_FIELD_DATATYPE |
+                        UCP_OP_ATTR_FIELD_USER_DATA,
+        .datatype = ucp_dt_make_contig(1),
+        .cb.recv = client_recv_cb,
+        .user_data = task_state,
+    };
+    task_state->send_params = send_params;
+    task_state->recv_params = recv_params;
+    ucp_ep_params_t ep_params = {
+        .field_mask = UCP_EP_PARAM_FIELD_FLAGS | UCP_EP_PARAM_FIELD_SOCK_ADDR |
+                      UCP_EP_PARAM_FIELD_ERR_HANDLING_MODE |
+                      UCP_EP_PARAM_FIELD_ERR_HANDLER,
+        .err_mode = UCP_ERR_HANDLING_MODE_PEER,
+        .flags = UCP_EP_PARAMS_FLAGS_CLIENT_SERVER,
+        .err_handler.cb = client_ep_error_handler,
+        .err_handler.arg = &client_threads[ctx->client_thread_idx].tasks[i],
+        .sockaddr.addr = ctx->server_addr,
+        .sockaddr.addrlen = sizeof(struct sockaddr),
+    };
+    if ((status = ucp_ep_create(worker, &ep_params, &task_state->ep)) != UCS_OK) {
+      goto err_ep;
+    }
+  }
+
+  _Bool finished = 0;
+  while (!finished) {
+    finished = 1;
+    for (size_t j = 0; j < client_threads[ctx->client_thread_idx].task_count;
+         ++j) {
+      client_task_state_t *task_state =
+          &client_threads[ctx->client_thread_idx].tasks[j];
+      if (task_state->finished) {
+        continue;
+      }
+      finished = 0;
+      ucs_status_ptr_t status_ptr;
+      switch (task_state->flag) {
+      case PENDING:
+        break;
+      case SEND:
+        status_ptr = ucp_tag_send_nbx(task_state->ep, task_state->buffer,
+                         task_state->buffer_size, 99, &task_state->send_params);
+        if (status_ptr == NULL) {
+          task_state->flag = RECV;
+        }
+        else if (UCS_PTR_IS_ERR(status_ptr)) {
+          fprintf(stderr, "client tag_send_nbx: %s\n", ucs_status_string(UCS_PTR_STATUS(status_ptr)));
+          task_state->finished = 1;
+          ucp_request_free(status_ptr);
+        }
+        else {
+          task_state->flag = PENDING;
+        }
+        break;
+      case RECV:
+        status_ptr = ucp_tag_recv_nbx(worker,
+                         task_state->buffer, task_state->buffer_size, 99, 0,
+                         &task_state->recv_params);
+        if (status_ptr == NULL) {
+          task_state->flag = SEND;
+        }
+        else if (UCS_PTR_IS_ERR(status_ptr)) {
+          fprintf(stderr, "client tag_recv_nbx: %s\n", ucs_status_string(UCS_PTR_STATUS(status_ptr)));
+          task_state->finished = 1;
+          ucp_request_free(status_ptr);
+        }
+        else {
+          task_state->flag = PENDING;
+        }
+        break;
+      }
+    }
+    if (finished) {
+      fprintf(stderr, "client finished\n");
+      break;
+    }
+    ucp_worker_progress(worker);
+  }
+
+  // リソースの解放
+  for (size_t i = 0; i < client_threads[ctx->client_thread_idx].task_count;
+       ++i) {
+    client_task_state_t *task_state =
+        &client_threads[ctx->client_thread_idx].tasks[i];
+    if (task_state->ep != NULL) {
+      if (client_threads[ctx->client_thread_idx].tasks[i].ep_closed) {
+        close_ep(worker, task_state->ep);
+      }
+      fprintf(stderr, "ep_destroy_begin\n");
+      ucp_ep_destroy(task_state->ep);
+      fprintf(stderr, "ep_destroy_end\n");
+    }
+    free(task_state->buffer);
   }
 err_ep:
-  close_ep(worker, ep);
-  ucp_ep_destroy(ep);
+  ucp_worker_destroy(worker);
+  client_threads[ctx->client_thread_idx].finished = 1;
+  free(arg);
 err:
-  return status;
+  return NULL;
+}
+
+// ただmallocした領域に情報詰めてpthreadを立ち上げるだけ
+static void spawn_client_thread(ucp_context_h ctx, struct sockaddr *server_addr,
+                                size_t client_thread_idx) {
+  pthread_t thread;
+  client_thread_ctx_t *thread_ctx = malloc(sizeof(client_thread_ctx_t));
+  thread_ctx->client_thread_idx = client_thread_idx;
+  thread_ctx->ctx = ctx;
+  thread_ctx->server_addr = server_addr;
+
+  pthread_create(&thread, 0, start_client_thread, thread_ctx);
+}
+
+static ucs_status_t run_client(ucp_context_h ctx, struct sockaddr *server_addr,
+                               size_t client_thread_count,
+                               size_t client_task_count, size_t buffer_size) {
+  client_threads = malloc(sizeof(client_thread_state_t) * client_thread_count);
+  // 初期化
+  for (size_t i = 0; i < client_thread_count; ++i) {
+    client_threads[i].tasks =
+        malloc(sizeof(client_task_state_t) * client_task_count);
+    client_threads[i].task_count = client_task_count;
+    client_threads[i].finished = 0;
+    // init all task states
+    for (size_t j = 0; j < client_task_count; ++j) {
+      client_threads[i].tasks[j].ep = NULL;
+      client_threads[i].tasks[j].task_id = j;
+      client_threads[i].tasks[j].buffer_size = buffer_size;
+      client_threads[i].tasks[j].buffer = NULL;
+      client_threads[i].tasks[j].flag = SEND;
+    }
+    spawn_client_thread(ctx, server_addr, i);
+  }
+
+  _Bool yet_finished = 1;
+  while (yet_finished) {
+    // 一つでも終了していないスレッドがあれば終了しない
+    yet_finished = 0;
+    for (size_t i = 0; i < client_thread_count; ++i) {
+      if (!client_threads[i].finished) {
+        yet_finished = 1;
+      }
+    }
+    // 適当...
+    // このスレッドは眠ってても大丈夫なはず(各スレッド独立のworkerが実際の処理をするので)
+    sleep(1);
+  }
+
+  fprintf(stderr, "all client finished\n");
+
+  // 確保したリソースの削除
+  for (size_t i = 0; i < client_thread_count; ++i) {
+    free(client_threads[i].tasks);
+  }
+  return UCS_OK;
 }
 
 typedef struct worker_thread_param {
@@ -286,7 +472,7 @@ static void conn_handler(ucp_conn_request_h req, void *arg) {
   wt_param->req = req;
 
   pthread_t thread;
-  pthread_create(&thread, NULL, spawn_worker, wt_param);
+  pthread_create(&thread, 0, spawn_worker, wt_param);
 }
 
 static ucs_status_t run_server(conn_req_ctx_t *conn_req_ctx,
@@ -396,8 +582,7 @@ int main(int argc, char *argv[]) {
     if (init_ucx(ctx, &worker) != UCS_OK) {
       return 1;
     }
-    sleep(3);
-    if (run_client(worker, &server_addr) != UCS_OK) {
+    if (run_client(*ctx, &server_addr, 1, 1, sizeof(test_message)) != UCS_OK) {
       return 1;
     }
   }
