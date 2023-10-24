@@ -1,0 +1,6 @@
+{
+    "rust-analyzer.linkedProjects": [
+        "./bench-sync-ucx/Cargo.toml",
+        "./bench-sync-ucx/Cargo.toml"
+    ]
+}

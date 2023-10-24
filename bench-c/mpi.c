@@ -139,22 +139,22 @@ static ucs_status_t client_server_do_work(ucp_worker_h worker, ucp_ep_h ep,
         .cb.send = client_send_callback,
         .datatype = ucp_dt_make_contig(1),
     };
-    for (size_t i = 0; i < 5000000; ++i) {
-      ucs_status_ptr_t recv_req = ucp_tag_recv_nbx(
-          worker, buffer, sizeof(test_message), 99, 0, &recv_req_params);
-      if ((status = request_wait(worker, recv_req)) != UCS_OK) {
-        fprintf(stderr, "failed to close ep (%s)\n", ucs_status_string(status));
-      };
-      fprintf(stderr, "recv message: %s\n", (char *)buffer);
-      while (!completed) {
-        ucp_worker_progress(worker);
+    for (size_t i = 0; i < 50; ++i) {
+      for (size_t j = 0; j < 100000; ++j) {
+        ucs_status_ptr_t recv_req = ucp_tag_recv_nbx(
+            worker, buffer, sizeof(test_message), 99, 0, &recv_req_params);
+        if ((status = request_wait(worker, recv_req)) != UCS_OK) {
+          fprintf(stderr, "failed to close ep (%s)\n",
+                  ucs_status_string(status));
+        };
+        ucs_status_ptr_t send_req = ucp_tag_send_nbx(
+            ep, buffer, sizeof(test_message), 99, &send_req_params);
+        if ((status = request_wait(worker, send_req)) != UCS_OK) {
+          fprintf(stderr, "send tag nbx %s\n", ucs_status_string(status));
+          return status;
+        }
       }
-      ucs_status_ptr_t send_req =
-          ucp_tag_send_nbx(ep, buffer, sizeof(test_message), 99, &send_req_params);
-      if ((status = request_wait(worker, send_req)) != UCS_OK) {
-        fprintf(stderr, "send tag nbx %s\n", ucs_status_string(status));
-        return status;
-      }
+      ucp_ep_print_info(ep, stderr);
     }
     global_close = 1;
   } else {
@@ -176,21 +176,30 @@ static ucs_status_t client_server_do_work(ucp_worker_h worker, ucp_ep_h ep,
         .cb.recv = server_recv_callback,
         .datatype = ucp_dt_make_contig(1),
     };
-    for (size_t i = 0; i < 5000000; ++i) {
-      ucs_status_ptr_t send_req =
-          ucp_tag_send_nbx(ep, buffer, sizeof(test_message), 99, &send_req_params);
-      if ((status = request_wait(worker, send_req)) != UCS_OK) {
-        fprintf(stderr, "send tag nbx %s\n", ucs_status_string(status));
-        return status;
+    for (size_t i = 0; i < 50; ++i) {
+      struct timespec before, after;
+      clock_gettime(CLOCK_REALTIME, &before);
+      for (size_t j = 0; j < 100000; ++j) {
+        ucs_status_ptr_t send_req = ucp_tag_send_nbx(
+            ep, buffer, sizeof(test_message), 99, &send_req_params);
+        if ((status = request_wait(worker, send_req)) != UCS_OK) {
+          fprintf(stderr, "send tag nbx %s\n", ucs_status_string(status));
+          return status;
+        }
+        ucs_status_ptr_t recv_req = ucp_tag_recv_nbx(
+            worker, buffer, sizeof(test_message), 99, 0, &recv_req_params);
+        if ((status = request_wait(worker, recv_req)) != UCS_OK) {
+          fprintf(stderr, "failed to close ep (%s)\n",
+                  ucs_status_string(status));
+        };
       }
-      ucs_status_ptr_t recv_req = ucp_tag_recv_nbx(
-          worker, buffer, sizeof(test_message), 99, 0, &recv_req_params);
-      if ((status = request_wait(worker, recv_req)) != UCS_OK) {
-        fprintf(stderr, "failed to close ep (%s)\n", ucs_status_string(status));
-      };
-      while (!completed) {
-        ucp_worker_progress(worker);
-      }
+      clock_gettime(CLOCK_REALTIME, &after);
+      uint64_t elapsed_nsecs = (after.tv_sec - before.tv_sec) * 1000000000 +
+                               (after.tv_nsec - before.tv_nsec);
+      double elapsed_ns = elapsed_nsecs;
+      double iops = 100000.0 / elapsed_ns * 1000.0 * 1000.0 * 1000.0;
+      fprintf(stderr, "iops=%f\n", iops);
+      // ucp_ep_print_info(ep, stderr);
     }
     fprintf(stderr, "sent completed\n");
   }

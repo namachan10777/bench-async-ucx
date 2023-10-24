@@ -4,7 +4,9 @@ version = "0.1.0"
 edition = "2021"
 
 [profile.release]
-debug = true
+opt-level = 3
+lto = true
+overflow-checks = false
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -18,8 +20,8 @@ tokio = { version = "1.29.1", features = [
     "sync",
     "rt",
 ] }
-async-ucx = { path = "async-ucx", features = ["am", "event"] }
-mpi = { path = "rsmpi" }
+async-ucx = { path = "../async-ucx", features = ["am", "event"] }
+mpi = { path = "../rsmpi" }
 tracing = "0.1.37"
 tracing-subscriber = { version = "0.3.17", features = ["env-filter"] }
 anyhow = "1.0.75"
