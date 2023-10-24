@@ -5,23 +5,31 @@ use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4},
     rc::{Rc, Weak},
     sync::atomic::{AtomicBool, Ordering},
+    time::{Duration, Instant},
 };
 
 use anyhow::Context as _;
-use mpi::traits::{Communicator, Destination, Source};
+use libc::sockaddr_storage;
+use mpi::{
+    point_to_point::Status,
+    traits::{Communicator, Destination, Source},
+};
 use network_interface::{NetworkInterface, NetworkInterfaceConfig};
 use regex::Regex;
+use socket2::SockAddr;
 use tracing::{error, info, trace, warn};
 use ucx1_sys::{
-    ucp_cleanup, ucp_config_read, ucp_conn_request, ucp_context_h, ucp_ep_close_flags_t,
-    ucp_ep_close_nbx, ucp_ep_create, ucp_ep_destroy, ucp_ep_h, ucp_ep_params, ucp_ep_params_field,
-    ucp_err_handler, ucp_feature, ucp_init_version, ucp_listener_create, ucp_listener_destroy,
-    ucp_listener_h, ucp_listener_params_field, ucp_listener_params_t, ucp_op_attr_t,
-    ucp_request_check_status, ucp_request_free, ucp_request_param_t,
-    ucp_request_param_t__bindgen_ty_1, ucp_tag_recv_info, ucp_tag_send_nbx, ucp_worker_create,
-    ucp_worker_destroy, ucp_worker_h, ucp_worker_progress, ucs_sock_addr, ucs_status_ptr_t,
-    ucs_status_t, UCS_PTR_IS_ERR, UCS_PTR_RAW_STATUS, UCS_PTR_STATUS,
+    ucp_cleanup, ucp_config_read, ucp_conn_request, ucp_context_h, ucp_datatype_t,
+    ucp_dt_make_contig, ucp_ep_close_flags_t, ucp_ep_close_nbx, ucp_ep_create, ucp_ep_destroy,
+    ucp_ep_h, ucp_ep_params, ucp_ep_params_field, ucp_ep_params_flags_field, ucp_err_handler,
+    ucp_feature, ucp_init_version, ucp_listener_create, ucp_listener_destroy, ucp_listener_h,
+    ucp_listener_params_field, ucp_listener_params_t, ucp_op_attr_t, ucp_request_check_status,
+    ucp_request_free, ucp_request_param_t, ucp_request_param_t__bindgen_ty_1, ucp_tag_recv_info,
+    ucp_tag_recv_nbx, ucp_tag_send_nbx, ucp_worker_create, ucp_worker_destroy, ucp_worker_h,
+    ucp_worker_progress, ucs_sock_addr, ucs_status_ptr_t, ucs_status_t, UCS_PTR_IS_ERR,
+    UCS_PTR_IS_PTR, UCS_PTR_RAW_STATUS, UCS_PTR_STATUS,
 };
+use valuable::Valuable;
 
 /// UCX error code.
 #[allow(missing_docs)]
@@ -144,7 +152,8 @@ impl Error {
         if status == ucs_status_t::UCS_OK {
             Ok(())
         } else {
-            Err(Self::from_error(status))
+            let err = Self::from_error(status);
+            Err(err)
         }
     }
 
@@ -186,7 +195,6 @@ struct Worker {
 impl Drop for Worker {
     fn drop(&mut self) {
         unsafe {
-            trace!("drop worker");
             ucp_worker_destroy(self.h);
         }
     }
@@ -211,7 +219,6 @@ impl Worker {
         let status = ucp_worker_create(ctx.h, &worker_params, worker.as_mut_ptr());
         Error::from_status(status)?;
         let worker = worker.assume_init();
-        trace!("worker_created");
         Ok(Rc::new(Worker {
             h: worker,
             _ctx: ctx.clone(),
@@ -229,7 +236,6 @@ struct Context {
 impl Drop for Context {
     fn drop(&mut self) {
         unsafe {
-            trace!("drop context");
             ucp_cleanup(self.h);
         }
     }
@@ -271,7 +277,6 @@ struct Listener<S> {
 impl<S> Drop for Listener<S> {
     fn drop(&mut self) {
         unsafe {
-            trace!("drop listener");
             ucp_listener_destroy(self.h);
         }
     }
@@ -311,11 +316,6 @@ impl<S: Clone> Listener<S> {
             state: state.clone(),
             worker: worker.clone(),
         });
-        trace!(
-            weak = Rc::weak_count(worker),
-            strong = Rc::strong_count(worker),
-            "worker_in_conn_handler_data"
-        );
 
         let conn_handler = ucx1_sys::ucp_listener_conn_handler {
             cb: Some(callback::<S>),
@@ -336,17 +336,11 @@ impl<S: Clone> Listener<S> {
         let status = ucp_listener_create(worker.h, &listener_params, listener.as_mut_ptr());
         Error::from_status(status)?;
         let listener = listener.assume_init();
-        trace!("listener_created");
         let listener = Listener {
             h: listener,
             _worker: worker.clone(),
             _conn_handler_data: conn_handler_data,
         };
-        trace!(
-            weak = Rc::weak_count(worker),
-            strong = Rc::strong_count(worker),
-            "worker_in_conn_handler_data2"
-        );
         Ok(Rc::new(listener))
     }
 }
@@ -358,12 +352,6 @@ struct ConnectionRequest {
 impl ConnectionRequest {
     unsafe fn from_raw(ptr: *mut ucp_conn_request) -> Self {
         Self { ptr }
-    }
-}
-
-impl Drop for ConnectionRequest {
-    fn drop(&mut self) {
-        unsafe { ucp_request_free(self.ptr as _) }
     }
 }
 
@@ -382,9 +370,8 @@ pub struct StatusPtr {
 }
 
 impl StatusPtr {
-    unsafe fn wait(&self, worker: &Worker) -> Result<(), Error> {
-        if !self.ptr.is_null() {
-            Error::from_status(UCS_PTR_STATUS(self.ptr))?;
+    unsafe fn wait(self, worker: &Worker) -> Result<(), Error> {
+        if !self.ptr.is_null() && UCS_PTR_STATUS(self.ptr) != ucs_status_t::UCS_OK {
             let mut checked_status = ucs_status_t::UCS_INPROGRESS;
             while checked_status == ucs_status_t::UCS_INPROGRESS {
                 checked_status = ucp_request_check_status(self.ptr);
@@ -393,6 +380,13 @@ impl StatusPtr {
             Error::from_status(checked_status)
         } else {
             Ok(())
+        }
+    }
+}
+impl Drop for StatusPtr {
+    fn drop(&mut self) {
+        if UCS_PTR_IS_PTR(self.ptr) {
+            unsafe { ucp_request_free(self.ptr) }
         }
     }
 }
@@ -407,19 +401,19 @@ impl Endpoint {
         }
         let ep_params_default = MaybeUninit::uninit();
         let closed_flag = Rc::new(RefCell::new(false));
-        let sockaddr = socket2::SockAddr::from(addr);
-        let sockaddr = ucs_sock_addr {
-            addrlen: sockaddr.len(),
-            addr: (&sockaddr.as_storage() as *const libc::sockaddr_storage)
-                as *const ucx1_sys::sockaddr,
-        };
+        let sockaddr = SockAddr::from(addr);
         let ep_params = ucp_ep_params {
             field_mask: (ucp_ep_params_field::UCP_EP_PARAM_FIELD_SOCK_ADDR
+                | ucp_ep_params_field::UCP_EP_PARAM_FIELD_FLAGS
                 | ucp_ep_params_field::UCP_EP_PARAM_FIELD_ERR_HANDLING_MODE
                 | ucp_ep_params_field::UCP_EP_PARAM_FIELD_ERR_HANDLER)
                 .0 as u64,
             err_mode: ucx1_sys::ucp_err_handling_mode_t::UCP_ERR_HANDLING_MODE_PEER,
-            sockaddr,
+            flags: ucp_ep_params_flags_field::UCP_EP_PARAMS_FLAGS_CLIENT_SERVER.0,
+            sockaddr: ucs_sock_addr {
+                addrlen: sockaddr.len(),
+                addr: &sockaddr.as_storage() as *const sockaddr_storage as _,
+            },
             err_handler: ucp_err_handler {
                 cb: Some(err_handler),
                 arg: Rc::downgrade(&closed_flag).as_ptr() as _,
@@ -429,7 +423,7 @@ impl Endpoint {
         let mut ep = MaybeUninit::uninit();
         let status = ucp_ep_create(worker.h, &ep_params, ep.as_mut_ptr());
         Error::from_status(status)?;
-        trace!("endpoint_created_from_sockaddr");
+        worker.progress();
         Ok(Self {
             ptr: ep.assume_init(),
             closed: closed_flag,
@@ -465,7 +459,6 @@ impl Endpoint {
         let mut ep = MaybeUninit::uninit();
         let status = ucp_ep_create(worker.h, &ep_params, ep.as_mut_ptr());
         Error::from_status(status)?;
-        trace!("endpoint_created_from_conn_req");
         Ok(Self {
             ptr: ep.assume_init(),
             closed: closed_flag,
@@ -498,6 +491,7 @@ impl Endpoint {
                 send: Some(cb::<C>),
             },
             user_data: callback.as_ptr() as _,
+            datatype: ucp_dt_make_contig(1),
             ..params_default.assume_init()
         };
         let ptr = ucp_tag_send_nbx(
@@ -533,17 +527,19 @@ impl Endpoint {
             op_attr_mask: (ucp_op_attr_t::UCP_OP_ATTR_FIELD_CALLBACK as u32
                 | ucp_op_attr_t::UCP_OP_ATTR_FIELD_USER_DATA as u32
                 | ucp_op_attr_t::UCP_OP_ATTR_FIELD_DATATYPE as u32),
+            datatype: ucp_dt_make_contig(1),
             cb: ucp_request_param_t__bindgen_ty_1 {
                 recv: Some(cb::<C>),
             },
             user_data: callback.as_ptr() as _,
             ..params_default.assume_init()
         };
-        let ptr = ucp_tag_send_nbx(
-            self.ptr,
+        let ptr = ucp_tag_recv_nbx(
+            self.worker.h,
             buffer.as_ref().as_ptr() as _,
             buffer.as_ref().len(),
             tag,
+            tag_mask,
             &params,
         );
         StatusPtr { ptr }
@@ -567,57 +563,61 @@ impl Drop for Endpoint {
                 }
             }
         }
-        unsafe { ucp_ep_destroy(self.ptr) }
+        // unsafe { ucp_ep_destroy(self.ptr) }
     }
 }
 
+const MESSAGE: &str = "Hello World!\0";
+
 unsafe fn client_server_do_work(ep: Endpoint, is_server: bool) -> Result<(), Error> {
     if is_server {
-        trace!("server_start");
         let mut buffer = [MaybeUninit::uninit(); 256];
         let rx_cb = Rc::new(|_| {});
         let tx_cb = Rc::new(|_| {});
 
-        let status = ep.tag_recv(&mut buffer, 99, 0, Rc::downgrade(&rx_cb));
-        status.wait(&ep.worker)?;
-        let buffer: [u8; 256] = transmute(buffer);
-        trace!(msg = String::from_utf8_lossy(&buffer).as_ref(), "recv");
-
-        let status = ep.tag_send(99, &buffer, Rc::downgrade(&tx_cb));
-        status.wait(&ep.worker)?;
+        for _ in 0..50 {
+            for _ in 0..1_000_000 {
+                let status = ep.tag_recv(&mut buffer, 99, 0, Rc::downgrade(&rx_cb));
+                status.wait(&ep.worker)?;
+                let buffer: [u8; 256] = transmute(buffer);
+                let status = ep.tag_send(101, &buffer, Rc::downgrade(&tx_cb));
+                status.wait(&ep.worker)?;
+            }
+        }
 
         Ok(())
     } else {
-        trace!("client_start");
         let rx_cb = Rc::new(|_| {});
         let tx_cb = Rc::new(|_| {});
 
-        let status = ep.tag_send(99, "Hello World!".as_bytes(), Rc::downgrade(&tx_cb));
-        status.wait(&ep.worker)?;
+        for _ in 0..50 {
+            let now = Instant::now();
+            for _ in 0..100_000 {
+                let status = ep.tag_send(99, MESSAGE.as_bytes(), Rc::downgrade(&tx_cb));
+                status.wait(&ep.worker)?;
 
-        let mut buffer = [MaybeUninit::uninit(); 256];
-        let status = ep.tag_recv(&mut buffer, 99, 0, Rc::downgrade(&rx_cb));
-        status.wait(&ep.worker)?;
-        let buffer: [u8; 256] = transmute(buffer);
-
-        trace!(msg = String::from_utf8_lossy(&buffer).as_ref(), "recv");
+                let mut buffer = [MaybeUninit::uninit(); 256];
+                let status = ep.tag_recv(&mut buffer, 101, 0, Rc::downgrade(&rx_cb));
+                status.wait(&ep.worker)?;
+                let buffer: [u8; 256] = transmute(buffer);
+            }
+            let elapsed = now.elapsed().as_micros();
+            info!(iops = (100000.0 / elapsed as f64 * 1000.0 * 1000.0))
+        }
 
         Ok(())
     }
 }
 
 unsafe fn conn_handler(conn_req: ConnectionRequest, worker: Rc<Worker>, state: Rc<AtomicBool>) {
-    trace!("incoming_request");
     let ep = match Endpoint::from_conn_req(worker, conn_req) {
         Ok(ep) => ep,
         Err(e) => {
-            trace!("{e}");
+            warn!("{e}");
             return;
         }
     };
-    if let Err(e) = client_server_do_work(ep, true) {
-        trace!("{e}");
-    }
+    if let Err(e) = client_server_do_work(ep, true) {}
     state.store(true, Ordering::SeqCst);
 }
 
@@ -635,10 +635,9 @@ fn main() -> anyhow::Result<()> {
     let size = world.size();
     let rank = world.rank();
     info!(size = size, rank = rank, "mpi_init");
-    let port = 10032;
+    let port = 10301;
 
     if rank == 0 {
-        trace!("trace_on");
         let child = world.process_at_rank(1);
         let ip = get_ip_candidates()?.pop().with_context(|| "ip not found")?;
         child.send_with_tag(ip.octets().as_ref(), 99);
@@ -647,28 +646,18 @@ fn main() -> anyhow::Result<()> {
             let ctx = Context::init()?;
             let mut worker = Worker::create(&ctx)?;
             let end_flag = Rc::new(AtomicBool::new(false));
-            if let Err(e) = Listener::create(
+            let listener = Listener::create(
                 &mut worker,
-                SocketAddr::V4(SocketAddrV4::new(ip, port)),
+                SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port)),
                 conn_handler,
                 end_flag.clone(),
-            ) {
-                warn!("{e}");
-            }
-            trace!(
-                weak = Rc::weak_count(&worker),
-                strong = Rc::strong_count(&worker),
-                "main"
-            );
-            trace!("server_created");
+            )?;
             while !end_flag.load(Ordering::Relaxed) {
                 worker.progress();
             }
-            trace!("{}", end_flag.load(Ordering::Relaxed));
         };
-        trace!("server_exited");
+        info!("server_exited");
     } else {
-        trace!("trace_on");
         let mut buf = [0; 4];
         let root = world.process_at_rank(0);
         let status = root.receive_into_with_tag(&mut buf, 99);
@@ -679,8 +668,9 @@ fn main() -> anyhow::Result<()> {
             tag = status.tag(),
             "get_ip"
         );
+        std::thread::sleep(Duration::from_secs(1));
         unsafe {
-            let ctx = Context::init()?;\
+            let ctx = Context::init()?;
             let worker = Worker::create(&ctx)?;
             let ep = match Endpoint::from_sockaddr(
                 worker,
@@ -692,12 +682,11 @@ fn main() -> anyhow::Result<()> {
                     return Err(e.into());
                 }
             };
-            trace!("client_ep_created");
             if let Err(e) = client_server_do_work(ep, false) {
                 warn!("{e}");
             }
         }
-        trace!("client_exited");
+        info!("client_exited");
     }
     Ok(())
 }

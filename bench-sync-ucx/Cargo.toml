@@ -9,7 +9,7 @@ edition = "2021"
 ucx1-sys = { path = "../async-ucx/ucx1-sys" }
 clap = { version = "4.3.21", features = ["derive"] }
 mpi = { path = "../rsmpi" }
-tracing = "0.1.37"
+tracing = { version = "0.1.37", features = ["valuable"] }
 tracing-subscriber = { version = "0.3.17", features = ["env-filter"] }
 anyhow = "1.0.75"
 network-interface = "1.0.2"
@@ -20,3 +20,5 @@ serde = { version = "1.0.188", features = ["derive"] }
 thiserror = "1.0.50"
 socket2 = "0.5.5"
 libc = "0.2.149"
+rmp = "0.8.12"
+valuable = "0.1.0"
