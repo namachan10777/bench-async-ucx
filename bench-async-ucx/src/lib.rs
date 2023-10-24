@@ -140,6 +140,7 @@ pub async fn bench<B: Bench + Clone + Send + Sync + 'static>(
     let port = 10032;
 
     if rank == 0 {
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         let child = world.process_at_rank(1);
         let ip = get_ip_candidates()?.pop().with_context(|| "ip not found")?;
         child.send_with_tag(ip.octets().as_ref(), 99);
@@ -148,7 +149,7 @@ pub async fn bench<B: Bench + Clone + Send + Sync + 'static>(
         let mut workers = Vec::new();
         let ctx = Context::new()?;
         let worker = ctx.create_worker()?;
-        let mut listener = worker.create_listener(SocketAddr::V4(SocketAddrV4::new(ip, port)))?;
+        let mut listener = worker.create_listener(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port)))?;
         trace!(on = ip.to_string(), "listener_created");
         local.spawn_local(worker.clone().polling());
         for _ in 0..config.server_thread_count {
