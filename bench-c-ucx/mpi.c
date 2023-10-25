@@ -27,7 +27,7 @@
 
 #define UNUSED(x) (void)(x)
 
-static uint16_t listen_port = 10099;
+static uint16_t listen_port = 10102;
 
 int bn_get_my_addr(struct sockaddr *if_addr_buf) {
   struct ifaddrs *ifaddr, *ifa;
@@ -91,6 +91,8 @@ static ucs_status_t bn_close_ep(ucp_worker_h worker, ucp_ep_h ep) {
 const char test_message[] = "Hello World!";
 
 typedef enum bn_client_state_flag {
+  BN_CLIENT_WILL_RECV_TAG,
+  BN_CLIENT_DID_RECV_TAG,
   BN_CLIENT_WILL_SEND,
   BN_CLIENT_DID_SEND,
   BN_CLIENT_WILL_RECV,
@@ -421,6 +423,8 @@ static ucs_status_t bn_run_client(ucp_context_h ctx,
 static size_t server_task_slot_preparation_count = 1024;
 
 typedef enum bn_server_task_state_flag {
+  BN_SERVER_WILL_SEND_TAG,
+  BN_SERVVER_DID_SEND_TAG,
   BN_SERVER_WILL_SEND,
   BN_SERVER_DID_SEND,
   BN_SERVER_WILL_RECV,
