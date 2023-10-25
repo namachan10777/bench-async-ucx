@@ -6,7 +6,7 @@ mpi = dependency('mpi', version : '>=4')
 ucx = dependency('ucx', version : '>=1.14.0')
 threads = dependency('threads')
 
-exe = executable('mpi', 'mpi.c',
+exe = executable('tag', 'tag.c',
   install : true,
   dependencies : [mpi, ucx, threads],
 )
